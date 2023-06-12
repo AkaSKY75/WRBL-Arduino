@@ -1,13 +1,25 @@
 #define USE_ARDUINO_INTERRUPTS true    // Set-up low-level interrupts for most acurate BPM math
 #define DHTPIN 7
 #define DHTTYPE DHT11
+
 #include <PulseSensorPlayground.h>     // Includes the PulseSensorPlayground Library
 #include "SoftwareSerial.h";           // Used for Bluetooth Mate
 #include <DHT.h>                     // DHT11
 
+enum class TransmissionStates {
+  READ_ECG,
+  SHOULD_SEND,
+  BUFFER_FULL
+};
+
 /*  JSON stuff  */
 //unsigned char StrJSON[8066];
-String StrJSON;
+//String StrJSON;
+char jsonBuffer[1000];
+int ecg;
+unsigned short jsonBufferIndex = 0;
+TransmissionStates transmissionState = TransmissionStates::READ_ECG;
+char command;
 //unsigned short StrJSONIndex;
 
 /*  DHT11  */
@@ -31,13 +43,19 @@ SoftwareSerial bluetooth(bluetoothTx, bluetoothRx);
 PulseSensorPlayground pulseSensor;  // Creates an object
 
 void setup() {
+
+  cli();
   Serial.begin(9600);
 
   /* JSON */
   //memset(StrJSON, 0, 8066);
   //StrJSONIndex = 0;
   //strcpy(StrJSON, "{\"ecg\":\"")
-  StrJSON = "{\"val_senzor_ecg\":\"";
+  //StrJSON = "{\"val_senzor_ecg\":\"";
+  memset(jsonBuffer, 0, 1000);
+  jsonBufferIndex = 0;
+  transmissionState = TransmissionStates::READ_ECG;
+  command = -1;
 
   /* DHT */
   dht.begin();
@@ -64,6 +82,81 @@ void setup() {
 	if (!pulseSensor.begin()) {
 		Serial.println("Error creating PulseSensor object created!");
 	}
+
+  /* INTERRUPTS */
+  //set timer2 interrupt at 1KHz
+  TCCR2A = 0; // set entire TCCR2A register to 0
+  TCCR2B = 0; // same for TCCR2B
+  TCNT2  = 0; //initialize counter value to 0
+  // set compare match register for 8khz increments
+  OCR2A = 250; // = (16*10^6) / (8000*8) - 1 (must be <256)
+  // turn on CTC mode
+  TCCR2A |= (1 << WGM21);
+  // Set CS21 bit for 64 prescaler
+  TCCR2B |= (1 << CS21) | (1 << CS20);   
+  // enable timer compare interrupt
+  TIMSK2 |= (1 << OCIE2A);
+
+  sei();
+
+}
+
+void send_buffer() {
+  for(jsonBufferIndex = 0; jsonBufferIndex < 1000; jsonBufferIndex++) {
+    bluetooth.print(jsonBuffer[jsonBufferIndex]);
+  }
+  memset(jsonBuffer, 0, 1000);
+  jsonBufferIndex = 0;
+}
+
+ISR(TIMER2_COMPA_vect) {
+  //timer1 interrupt 1KHz (1ms)
+
+  if (transmissionState == TransmissionStates::READ_ECG || transmissionState == TransmissionStates::SHOULD_SEND) {
+    if (jsonBufferIndex != 1000) {
+      ecg = (int)analogRead(A0);
+      jsonBuffer[jsonBufferIndex++] = '0';
+      jsonBuffer[jsonBufferIndex++] = byteToAscii((unsigned char)((ecg >> 8) & 0x0F));
+      jsonBuffer[jsonBufferIndex++] = byteToAscii((unsigned char)((ecg >> 4) & 0x0F));
+      jsonBuffer[jsonBufferIndex++] = byteToAscii((unsigned char)(ecg & 0x0F));
+    } else if (transmissionState == TransmissionStates::SHOULD_SEND) {
+      send_buffer();
+      transmissionState = TransmissionStates::READ_ECG;
+    } else {
+      transmissionState = TransmissionStates::BUFFER_FULL;
+    }
+  }
+
+  int myBPM = pulseSensor.getBeatsPerMinute();      // Calculates BPM
+
+	if (pulseSensor.sawStartOfBeat()) {               // Constantly test to see if a beat happened
+		//Serial.println("♥  A HeartBeat Happened ! "); // If true, print a message
+		//Serial.print("BPM: ");
+		//Serial.println(myBPM);                        // Print the BPM value
+    LastBPMRecorded = myBPM;
+  }
+	
+  if(bluetooth.available()) {
+    command = (char)bluetooth.read();
+    Serial.println(command);
+    if (command == '0') {
+      if (transmissionState == TransmissionStates::BUFFER_FULL) {
+        send_buffer();
+      } else {
+        transmissionState = TransmissionStates::SHOULD_SEND;
+      }
+    } else if (command == '1') {
+      memset(jsonBuffer, 0, 1000);
+      sprintf(jsonBuffer, "{\"val_senzor_puls\":\"%d\",\"val_senzor_umiditate\":\"%.2f\","
+        "\"val_senzor_temperatura\":\"%.2f\"}", LastBPMRecorded, (float)dht.readHumidity(), 
+        (float)dht.readTemperature()
+      );
+      send_buffer();
+      LastBPMRecorded = 0;
+      transmissionState = TransmissionStates::READ_ECG;
+    }
+  }
+
 }
 
 char byteToAscii(unsigned char byte)
@@ -90,33 +183,5 @@ char byteToAscii(unsigned char byte)
 }
 
 void loop() {
-  /*if((digitalRead(10) == 1)||(digitalRead(11) == 1)){
-    StrJSON = StrJSON + "0;";
-  }
-  else
-  {*/
-  int ecg = (int)analogRead(A0);
-  StrJSON = StrJSON + byteToAscii((unsigned char)((ecg >> 8) & 0x0F)) +byteToAscii((unsigned char)((ecg >> 4) & 0x0F)) + byteToAscii((unsigned char)(ecg & 0x0F));
-  if(StrJSON.length() > 8066)
-    StrJSON = "{\"val_senzor_ecg\":\"";
-  //}
-	int myBPM = pulseSensor.getBeatsPerMinute();      // Calculates BPM
-  if(bluetooth.available()) {
-    while(bluetooth.available()) bluetooth.read();
-    //StrJSON[i++] = '\"';
-    StrJSON = StrJSON + "\",\"val_senzor_puls\":\""+LastBPMRecorded + "\",\"val_senzor_umiditate\":\""+(float)dht.readHumidity()+"\",\"val_senzor_temperatura\":\""+(float)dht.readTemperature()+"\"}";
-    for(auto &ch : StrJSON) {
-      Serial.print(ch);
-      bluetooth.print(ch);
-    }
-    LastBPMRecorded = 0;
-    StrJSON = "{\"ecg\":\"";
-  }
-	if (pulseSensor.sawStartOfBeat()) {               // Constantly test to see if a beat happened
-		//Serial.println("♥  A HeartBeat Happened ! "); // If true, print a message
-		//Serial.print("BPM: ");
-		//Serial.println(myBPM);                        // Print the BPM value
-    LastBPMRecorded = myBPM;
-	}
-	delay(1000);
+
 }
