@@ -15,7 +15,9 @@ enum class TransmissionStates {
 /*  JSON stuff  */
 //unsigned char StrJSON[8066];
 //String StrJSON;
-char jsonBuffer[1000];
+char jsonBuffer[1001];
+char str_temp_humidity[6];
+char str_temp_temperature[6];
 int ecg;
 unsigned short jsonBufferIndex = 0;
 TransmissionStates transmissionState = TransmissionStates::READ_ECG;
@@ -24,6 +26,8 @@ char command;
 
 /*  DHT11  */
 DHT dht(DHTPIN, DHTTYPE);
+float LastReadHumidity = 0;
+float LastReadTemperature = 0;
 
 
 /* Pulse Sensor */
@@ -59,15 +63,17 @@ void setup() {
 
   /* DHT */
   dht.begin();
+  LastReadHumidity = 0;
+  LastReadTemperature = 0;
 
   /* Bluetooth sensor config */
   bluetooth.begin(115200);
-  bluetooth.print("$");
+  /*bluetooth.print("$");
   bluetooth.print("$");
   bluetooth.print("$");
   delay(100);
   bluetooth.println("U,9600,N");
-  bluetooth.begin(9600);
+  bluetooth.begin(9600);*/
 
   /* ECG */
   pinMode(10, INPUT); // Setup for leads off detection LO +
@@ -84,7 +90,7 @@ void setup() {
 	}
 
   /* INTERRUPTS */
-  //set timer2 interrupt at 1KHz
+  //set timer2 interrupt at 1000KHz
   TCCR2A = 0; // set entire TCCR2A register to 0
   TCCR2B = 0; // same for TCCR2B
   TCNT2  = 0; //initialize counter value to 0
@@ -102,16 +108,19 @@ void setup() {
 }
 
 void send_buffer() {
-  for(jsonBufferIndex = 0; jsonBufferIndex < 1000; jsonBufferIndex++) {
+  //Serial.println("Buffer length:" +jsonBufferIndex);
+  jsonBuffer[jsonBufferIndex] = '\n';
+  for(jsonBufferIndex = 0; jsonBuffer[jsonBufferIndex] != '\n'; jsonBufferIndex++) {
     bluetooth.print(jsonBuffer[jsonBufferIndex]);
   }
+  bluetooth.print('\n');
+  bluetooth.flush();
   memset(jsonBuffer, 0, 1000);
   jsonBufferIndex = 0;
 }
 
 ISR(TIMER2_COMPA_vect) {
   //timer1 interrupt 1KHz (1ms)
-
   if (transmissionState == TransmissionStates::READ_ECG || transmissionState == TransmissionStates::SHOULD_SEND) {
     if (jsonBufferIndex != 1000) {
       ecg = (int)analogRead(A0);
@@ -136,9 +145,12 @@ ISR(TIMER2_COMPA_vect) {
     LastBPMRecorded = myBPM;
   }
 	
+  LastReadHumidity = (float)dht.readHumidity();
+  LastReadTemperature = (float)dht.readHumidity();
+
   if(bluetooth.available()) {
     command = (char)bluetooth.read();
-    Serial.println(command);
+    // Serial.println(command);
     if (command == '0') {
       if (transmissionState == TransmissionStates::BUFFER_FULL) {
         send_buffer();
@@ -147,9 +159,10 @@ ISR(TIMER2_COMPA_vect) {
       }
     } else if (command == '1') {
       memset(jsonBuffer, 0, 1000);
-      sprintf(jsonBuffer, "{\"val_senzor_puls\":\"%d\",\"val_senzor_umiditate\":\"%.2f\","
-        "\"val_senzor_temperatura\":\"%.2f\"}", LastBPMRecorded, (float)dht.readHumidity(), 
-        (float)dht.readTemperature()
+      dtostrf(LastReadHumidity, 4, 2, str_temp_humidity);
+      dtostrf(LastReadTemperature, 4, 2, str_temp_temperature);
+      jsonBufferIndex = sprintf(jsonBuffer, "{\"val_senzor_puls\":\"%d\",\"val_senzor_umiditate\":\"%s\","
+        "\"val_senzor_temperatura\":\"%s\"}", LastBPMRecorded, str_temp_humidity, str_temp_temperature
       );
       send_buffer();
       LastBPMRecorded = 0;
@@ -183,5 +196,5 @@ char byteToAscii(unsigned char byte)
 }
 
 void loop() {
-
+    //delay(1);
 }
