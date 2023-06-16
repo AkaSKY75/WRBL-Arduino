@@ -12,6 +12,8 @@ enum class TransmissionStates {
   BUFFER_FULL
 };
 
+int receivedInt;
+
 /*  JSON stuff  */
 //unsigned char StrJSON[8066];
 //String StrJSON;
@@ -39,12 +41,15 @@ int LastBPMRecorded = 0;
 /* Bluetooth sensor */
 int bluetoothTx = 2;
 int bluetoothRx = 3;
+int bluetoothPowerPin = 8;
 
 SoftwareSerial bluetooth(bluetoothTx, bluetoothRx);
 
 /**/
 
 PulseSensorPlayground pulseSensor;  // Creates an object
+
+void(* resetFunc) (void) = 0;
 
 void setup() {
 
@@ -68,6 +73,9 @@ void setup() {
 
   /* Bluetooth sensor config */
   bluetooth.begin(115200);
+  DDRB |= (1 << PB0);
+  PORTB |= (1 << PB0);
+
   /*bluetooth.print("$");
   bluetooth.print("$");
   bluetooth.print("$");
@@ -114,7 +122,7 @@ void send_buffer() {
     bluetooth.print(jsonBuffer[jsonBufferIndex]);
   }
   bluetooth.print('\n');
-  bluetooth.flush();
+  //bluetooth.flush();
   memset(jsonBuffer, 0, 1000);
   jsonBufferIndex = 0;
 }
@@ -123,7 +131,11 @@ ISR(TIMER2_COMPA_vect) {
   //timer1 interrupt 1KHz (1ms)
   if (transmissionState == TransmissionStates::READ_ECG || transmissionState == TransmissionStates::SHOULD_SEND) {
     if (jsonBufferIndex != 1000) {
-      ecg = (int)analogRead(A0);
+      if ((PINB & (1 << PB2)) && (PINB & (1 << PB3))) {
+        ecg = (int)analogRead(A0);
+      } else {
+        ecg = 0;
+      }
       jsonBuffer[jsonBufferIndex++] = '0';
       jsonBuffer[jsonBufferIndex++] = byteToAscii((unsigned char)((ecg >> 8) & 0x0F));
       jsonBuffer[jsonBufferIndex++] = byteToAscii((unsigned char)((ecg >> 4) & 0x0F));
@@ -154,6 +166,7 @@ ISR(TIMER2_COMPA_vect) {
     if (command == '0') {
       if (transmissionState == TransmissionStates::BUFFER_FULL) {
         send_buffer();
+        transmissionState = TransmissionStates::READ_ECG;
       } else {
         transmissionState = TransmissionStates::SHOULD_SEND;
       }
@@ -169,11 +182,9 @@ ISR(TIMER2_COMPA_vect) {
       transmissionState = TransmissionStates::READ_ECG;
     }
   }
-
 }
 
-char byteToAscii(unsigned char byte)
-{
+char byteToAscii(unsigned char byte){
   switch(byte)
   {
     case 0: return '0';
@@ -195,6 +206,44 @@ char byteToAscii(unsigned char byte)
   }
 }
 
+void recvInt() {
+  while(Serial.available() == 0) { } //wait for input from console
+  receivedInt = Serial.read(); // parse input to INT, other values are ignored
+}
+
+void PrintByInput() {
+  if (receivedInt != NULL) { //call SWITCH if input is available
+    switch (receivedInt) { //print by input, otheway say !WRONG INPUT!
+      case 'R':
+      Serial.println("Reset performed.");
+      delay (500);
+      receivedInt = NULL;
+      resetFunc();
+      break;
+    default:
+      Serial.println("!WRONG INPUT!");
+      Serial.println(receivedInt);
+      break;
+    }
+    receivedInt = NULL; //clear variable value
+  }
+}
+
 void loop() {
-    //delay(1);
+    /*delay(1000);
+    if (Serial.available()){
+      int command = Serial.read();
+      Serial.println(command);
+      if (command == 4){
+        Serial.println("Reset performed.");
+        resetFunc();
+        Serial.end();
+        Serial.begin(9600);
+      }
+    }*/
+
+    //recvInt(); //call function to read value from console
+    //PrintByInput(); //call function with SWITCH
+
+
 }
